@@ -6,11 +6,12 @@ INDEX_NAME = "NIFTY"
 
 def fetch_nifty_option_chain():
     with sync_playwright() as p:
-        browser = p.firefox.launch(headless=True)
-        context = browser.new_context()
-        page = context.new_page()
-
+        browser = None
         try:
+            browser = p.firefox.launch(headless=True)
+            context = browser.new_context()
+            page = context.new_page()
+
             page.goto("https://www.nseindia.com", timeout=60000)
             page.wait_for_timeout(3000)
             response = page.goto(
@@ -71,7 +72,8 @@ def fetch_nifty_option_chain():
             return None, None
 
         finally:
-            browser.close()
+            if browser:
+                browser.close()
 
 if __name__ == "__main__":
     df, price = fetch_nifty_option_chain()
