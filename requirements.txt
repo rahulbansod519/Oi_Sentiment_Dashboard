@@ -7,4 +7,3 @@ playwright
 # After installing requirements, run this in your terminal (not in requirements.txt):
 # playwright install
 # playwright install-deps  # Uncomment and run if you need extra dependencies for Playwright
-playwright install 
