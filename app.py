@@ -5,9 +5,19 @@ import time
 from data.fetch_chain import fetch_nifty_option_chain
 from logic.signal_engine import analyze_sentiment, detect_oi_shift, check_exit_conditions
 import streamlit.components.v1 as components
+import uuid
+import os
 
-# --- Page Setup ---
-st.set_page_config(page_title="Nifty Options Dashboard", layout="wide")
+# --- Helper: Next Interval ---
+def get_next_interval(now, interval_minutes=5):
+    """Return the next datetime rounded up to the next interval (e.g., 5 min)."""
+    discard = datetime.timedelta(
+        minutes=now.minute % interval_minutes,
+        seconds=now.second,
+        microseconds=now.microsecond
+    )
+    next_time = now - discard + datetime.timedelta(minutes=interval_minutes)
+    return next_time.replace(second=0, microsecond=0)
 
 # --- Constants ---
 REFRESH_INTERVAL_MINUTES = 5
@@ -17,20 +27,15 @@ now = datetime.datetime.now()
 
 # --- Initialize next_refresh_time ONCE ---
 if "next_refresh_time" not in st.session_state:
-    minutes_to_add = REFRESH_INTERVAL_MINUTES - (now.minute % REFRESH_INTERVAL_MINUTES)
-    st.session_state["next_refresh_time"] = now.replace(second=0, microsecond=0) + datetime.timedelta(minutes=minutes_to_add)
+    st.session_state["next_refresh_time"] = get_next_interval(now, REFRESH_INTERVAL_MINUTES)
 
-# --- Time Check (FIXED VERSION) ---
+# --- Time Check (EXACT INTERVALS) ---
 if now >= st.session_state["next_refresh_time"]:
-    # Calculate next refresh time properly to avoid infinite loops
-    while st.session_state["next_refresh_time"] <= now:
-        st.session_state["next_refresh_time"] += datetime.timedelta(minutes=REFRESH_INTERVAL_MINUTES)
+    st.session_state["next_refresh_time"] = get_next_interval(now, REFRESH_INTERVAL_MINUTES)
     st.rerun()
 
 # --- Countdown ---
 seconds_left = int((st.session_state["next_refresh_time"] - now).total_seconds())
-
-# Ensure we don't have negative countdown
 if seconds_left < 0:
     seconds_left = 0
 
@@ -38,11 +43,9 @@ components.html(f"""
     <div style="padding:0.5em 1em; background:#f0f2f6; border-radius:0.5em; font-size:1.2em; font-weight:500; display:inline-block;">
         🕒 Auto-refresh in: <span id="countdown">{seconds_left//60:02d}:{seconds_left%60:02d}</span>
     </div>
-
     <script>
         var seconds = {seconds_left};
         const el = document.getElementById("countdown");
-
         function tick() {{
             if (seconds > 0) {{
                 seconds--;
@@ -52,7 +55,6 @@ components.html(f"""
                 setTimeout(tick, 1000);
             }} else {{
                 el.innerText = "Refreshing...";
-                // Optional: Force page refresh when countdown reaches 0
                 setTimeout(() => window.parent.location.reload(), 1000);
             }}
         }}
@@ -71,12 +73,24 @@ if "last_oi" not in st.session_state:
 # --- Title ---
 st.title("📊 Nifty Intraday Options Dashboard — OI-Delta Strategy")
 
-# --- Fetch Option Chain ---
+# --- Fetch Option Chain with Retry ---
+MAX_RETRIES = 3
+RETRY_DELAY_SEC = 2
+
+warning_placeholder = st.empty()  # Create a placeholder for warnings
+
 with st.spinner("🔄 Fetching live option chain..."):
-    df, spot_price = fetch_nifty_option_chain()
+    for attempt in range(1, MAX_RETRIES + 1):
+        df, spot_price = fetch_nifty_option_chain()
+        if df is not None and spot_price is not None:
+            warning_placeholder.empty()  # Clear warning if fetch is successful
+            break
+        if attempt < MAX_RETRIES:
+            warning_placeholder.warning(f"Fetch attempt {attempt} failed. Retrying in {RETRY_DELAY_SEC} seconds...")
+            time.sleep(RETRY_DELAY_SEC)
 
 if df is None or spot_price is None:
-    st.error("❌ Failed to fetch Option Chain data. Please try again.")
+    st.error("❌ Failed to fetch Option Chain data after multiple attempts. Please try again.")
     st.stop()
 
 # --- OI Processing ---
@@ -148,14 +162,27 @@ st.code(shift_info)
 # --- Trade Log ---
 st.subheader("📒 Signal History")
 log_entry = {
-    "time": pd.Timestamp.now().strftime("%H:%M:%S"),
+    "id": str(uuid.uuid4()),  # Unique ID for each entry
+    "time": pd.Timestamp.now().strftime("%H:%M:%S.%f"),  # Include microseconds for uniqueness
     "signal": signal["signal"],
     "strike": signal["suggested_strike"],
     "pcr": signal["pcr"],
     "reasons": "; ".join(signal["reason"]),
     "spot": round(spot_price, 2)
 }
+
+# Always add to log, even if duplicate
 st.session_state["trade_log"].insert(0, log_entry)
+
+# --- Save to CSV ---
+today_str = datetime.datetime.now().strftime("%d-%m-%Y")
+csv_filename = f"{today_str}.csv"
+
+# If file exists, append only the new entry; else, write all
+if os.path.exists(csv_filename):
+    pd.DataFrame([log_entry]).to_csv(csv_filename, mode='a', header=False, index=False)
+else:
+    pd.DataFrame(st.session_state["trade_log"]).to_csv(csv_filename, index=False)
 
 log_df = pd.DataFrame(st.session_state["trade_log"])
 if not log_df.empty:
@@ -170,7 +197,8 @@ st.dataframe(df.set_index("strike"), use_container_width=True)
 # --- Manual Refresh ---
 st.divider()
 if st.button("🔁 Refresh"):
-    st.session_state["next_refresh_time"] = datetime.datetime.now()  # force immediate refresh
+    now = datetime.datetime.now()
+    st.session_state["next_refresh_time"] = get_next_interval(now, REFRESH_INTERVAL_MINUTES)
     st.rerun()
 
 # --- Save OI Snapshot ---
