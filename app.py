@@ -34,31 +34,62 @@ if now >= st.session_state["next_refresh_time"]:
     st.session_state["next_refresh_time"] = get_next_interval(now, REFRESH_INTERVAL_MINUTES)
     st.rerun()
 
-# --- Countdown ---
-seconds_left = int((st.session_state["next_refresh_time"] - now).total_seconds())
-if seconds_left < 0:
-    seconds_left = 0
+# --- Improved Countdown with Real-time Sync ---
+next_refresh = st.session_state["next_refresh_time"]
 
 components.html(f"""
     <div style="padding:0.5em 1em; background:#f0f2f6; border-radius:0.5em; font-size:1.2em; font-weight:500; display:inline-block;">
-        🕒 Auto-refresh in: <span id="countdown">{seconds_left//60:02d}:{seconds_left%60:02d}</span>
+        🕒 Auto-refresh in: <span id="countdown">--:--</span>
     </div>
     <script>
-        var seconds = {seconds_left};
+        const targetTime = new Date("{next_refresh.isoformat()}").getTime();
         const el = document.getElementById("countdown");
-        function tick() {{
-            if (seconds > 0) {{
-                seconds--;
-                const m = Math.floor(seconds / 60);
-                const s = seconds % 60;
-                el.innerText = ('0' + m).slice(-2) + ":" + ('0' + s).slice(-2);
-                setTimeout(tick, 1000);
+        let refreshTriggered = false;
+        
+        function updateCountdown() {{
+            const now = new Date().getTime();
+            const timeLeft = targetTime - now;
+            
+            if (timeLeft <= 0) {{
+                if (!refreshTriggered) {{
+                    refreshTriggered = true;
+                    el.innerText = "Refreshing...";
+                    // Let Streamlit handle the refresh naturally
+                    setTimeout(() => {{
+                        if (window.parent && window.parent.location) {{
+                            window.parent.location.reload();
+                        }} else {{
+                            window.location.reload();
+                        }}
+                    }}, 500);
+                }}
+                return;
+            }}
+            
+            const minutes = Math.floor(timeLeft / 60000);
+            const seconds = Math.floor((timeLeft % 60000) / 1000);
+            el.innerText = ('0' + minutes).slice(-2) + ":" + ('0' + seconds).slice(-2);
+            
+            // Use requestAnimationFrame for better performance and accuracy
+            if (document.hidden) {{
+                // When tab is hidden, use setTimeout with longer interval
+                setTimeout(updateCountdown, 1000);
             }} else {{
-                el.innerText = "Refreshing...";
-                setTimeout(() => window.parent.location.reload(), 1000);
+                // When tab is visible, use requestAnimationFrame for smoother updates
+                setTimeout(updateCountdown, 100);
             }}
         }}
-        tick();
+        
+        // Handle visibility changes
+        document.addEventListener('visibilitychange', function() {{
+            if (!document.hidden) {{
+                // Tab became visible - immediately sync with real time
+                updateCountdown();
+            }}
+        }});
+        
+        // Start the countdown
+        updateCountdown();
     </script>
 """, height=50)
 
